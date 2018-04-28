@@ -16,6 +16,9 @@ import boto3
 from flask import Flask, render_template_string
 from flask_wtf import FlaskForm
 from flask_wtf.file import FileField, FileRequired
+from wtforms import TextAreaField
+import flask_login
+from jose import jwt
 
 import config
 import util
@@ -24,6 +27,15 @@ import database
 application = Flask(__name__)
 application.secret_key = config.FLASK_SECRET
 
+login_manager = flask_login.LoginManager()
+login_manager.init_app(application)
+
+### load and cache cognito JSON Web Key (JWK)
+# https://docs.aws.amazon.com/cognito/latest/developerguide/amazon-cognito-user-pools-using-tokens-with-identity-providers.html
+JWKS_URL = ("https://cognito-idp.%s.amazonaws.com/%s/.well-known/jwks.json"
+            % (config.AWS_REGION, config.COGNITO_POOL_ID))
+JWKS = requests.get(JWKS_URL).json()["keys"]
+
 ### FlaskForm set up
 class PhotoForm(FlaskForm):
     """flask_wtf form class the file upload"""
@@ -31,6 +43,21 @@ class PhotoForm(FlaskForm):
         FileRequired()
     ])
 
+@login_manager.user_loader
+def user_loader(session_token):
+    """Populate user object, check expiry"""
+    if "expires" not in session:
+        return None
+
+    expires = datetime.utcfromtimestamp(session['expires'])
+    expires_seconds = (expires - datetime.utcnow()).total_seconds()
+    if expires_seconds < 0:
+        return None
+
+    user = User()
+    user.id = session_token
+    user.nickname = session['nickname']
+    return user
 
 @application.route("/", methods=('GET', 'POST'))
 def home():
@@ -133,7 +160,83 @@ def home():
             {% endblock %}
                 """, form=form, url=url, photos=photos, all_labels=all_labels)
 
+@application.route("/login")
+def login():
+    """Login route"""
+    # http://docs.aws.amazon.com/cognito/latest/developerguide/login-endpoint.html
+    session['csrf_state'] = util.random_hex_bytes(8)
+    cognito_login = ("https://%s/"
+                     "login?response_type=code&client_id=%s"
+                     "&state=%s"
+                     "&redirect_uri=%s/callback" %
+                     (config.COGNITO_DOMAIN, config.COGNITO_CLIENT_ID, session['csrf_state'],
+                      config.BASE_URL))
+    return redirect(cognito_login)
 
+@application.route("/logout")
+def logout():
+    """Logout route"""
+    # http://docs.aws.amazon.com/cognito/latest/developerguide/logout-endpoint.html
+    flask_login.logout_user()
+    cognito_logout = ("https://%s/"
+                      "logout?response_type=code&client_id=%s"
+                      "&logout_uri=%s/" %
+                      (config.COGNITO_DOMAIN, config.COGNITO_CLIENT_ID, config.BASE_URL))
+    return redirect(cognito_logout)
+
+@application.route("/callback")
+def callback():
+    """Exchange the 'code' for Cognito tokens"""
+    #http://docs.aws.amazon.com/cognito/latest/developerguide/token-endpoint.html
+    csrf_state = request.args.get('state')
+    code = request.args.get('code')
+    request_parameters = {'grant_type': 'authorization_code',
+                          'client_id': config.COGNITO_CLIENT_ID,
+                          'code': code,
+                          "redirect_uri" : config.BASE_URL + "/callback"}
+    response = requests.post("https://%s/oauth2/token" % config.COGNITO_DOMAIN,
+                             data=request_parameters,
+                             auth=HTTPBasicAuth(config.COGNITO_CLIENT_ID,
+                                                config.COGNITO_CLIENT_SECRET))
+
+    # the response:
+    # http://docs.aws.amazon.com/cognito/latest/developerguide/amazon-cognito-user-pools-using-tokens-with-identity-providers.html
+    if response.status_code == requests.codes.ok and csrf_state == session['csrf_state']:
+        verify(response.json()["access_token"])
+        id_token = verify(response.json()["id_token"], response.json()["access_token"])
+
+        user = User()
+        user.id = id_token["cognito:username"]
+        session['nickname'] = id_token["nickname"]
+        session['expires'] = id_token["exp"]
+        session['refresh_token'] = response.json()["refresh_token"]
+        flask_login.login_user(user, remember=True)
+        return redirect(url_for("home"))
+
+    return render_template_string("""
+        {% extends "main.html" %}
+        {% block content %}
+            <p>Something went wrong</p>
+        {% endblock %}""")
+
+@application.errorhandler(401)
+def unauthorized(exception):
+    "Unauthorized access route"
+    return render_template_string("""
+        {% extends "main.html" %}
+        {% block content %}
+            <p>Please login to access this page</p>
+        {% endblock %}"""), 401
+
+def verify(token, access_token=None):
+    """Verify a cognito JWT"""
+    # get the key id from the header, locate it in the cognito keys
+    # and verify the key
+    header = jwt.get_unverified_header(token)
+    key = [k for k in JWKS if k["kid"] == header['kid']][0]
+    id_token = jwt.decode(token, key, audience=config.COGNITO_CLIENT_ID, access_token=access_token)
+    return id_token
+    
 @application.route("/info")
 def info():
     "Webserver info route"
