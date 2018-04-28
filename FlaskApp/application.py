@@ -59,16 +59,31 @@ def user_loader(session_token):
     user.nickname = session['nickname']
     return user
 
-@application.route("/", methods=('GET', 'POST'))
+@application.route("/")
 def home():
     """Homepage route"""
+    return render_template_string("""
+        {% extends "main.html" %}
+        {% block content %}
+        {% if current_user.is_authenticated %}
+        Click <em>my photos</em> to access your photos.
+        {% else %}
+        Click <em>login in / sign up<em> to access this site.
+        {% endif %}
+        {% endblock %}""")
+
+@application.route("/myphotos", methods=('GET', 'POST'))
+@flask_login.login_required
+def myphotos():
+    "login required my photos route"
     all_labels = ["No labels yet"]
 
     #####
     # rds exercise get list of images from database
+    # now we have a user id from cognito
     #####
     s3_client = boto3.client('s3')
-    photos = database.list_photos()
+    photos = database.list_photos(flask_login.current_user.id)
     for photo in photos:
         photo["signed_url"] = s3_client.generate_presigned_url(
             'get_object',
@@ -111,21 +126,29 @@ def home():
 
             #######
             # rds excercise
+            # added user id and description to the database
             #######
             labels_comma_separated = ", ".join(all_labels)
-            database.add_photo(key, labels_comma_separated)
+            database.add_photo(key, labels_comma_separated,
+                               form.description.data, flask_login.current_user.id)
+            form.description.data = ''
 
     return render_template_string("""
             {% extends "main.html" %}
             {% block content %}
             <h4>Upload Photo</h4>
-            <form method="POST" enctype="multipart/form-data" action="{{ url_for('home') }}">
+            <form method="POST" enctype="multipart/form-data" action="{{ url_for('myphotos') }}">
                 {{ form.csrf_token }}
                   <div class="control-group">
                    <label class="control-label">Photo</label>
                     {{ form.photo() }}
                   </div>
-
+                  <div class="control-group">
+                    <label class="control-label">Description</label>
+                    <div class="controls">
+                    {{ form.description(class="form-control") }}
+                    </div>
+                  </div>
                     &nbsp;
                    <div class="control-group">
                     <div class="controls">
@@ -148,7 +171,10 @@ def home():
             <h4>Photos</h4>
             {% for photo in photos %}
                 <table class="table table-bordered">
-                <tr> <td rowspan="4" class="col-md-2 text-center"><img width="150" src="{{photo.signed_url}}" /> </td></tr>
+                <tr> <td rowspan="4" class="col-md-2 text-center"><img width="150" src="{{photo.signed_url}}" />
+                    <a href="{{ url_for('myphotos_delete', object_key=photo.object_key) }}"><span class="glyphicon glyphicon-remove" aria-hidden="true"></span> delete</a>
+                </td></tr>
+                <tr> <th scope="row" class="col-md-2">Description</th> <td>{{photo.description}}</td> </tr>
                 <tr> <th scope="row" class="col-md-2">Labels</th> <td>{{photo.labels}}</td> </tr>
                 <tr> <th scope="row" class="col-md-2">Created</th> <td>{{photo.created_datetime}} UTC</td> </tr>
                 </table>
@@ -159,7 +185,15 @@ def home():
 
             {% endblock %}
                 """, form=form, url=url, photos=photos, all_labels=all_labels)
+    
+@application.route("/myphotos/delete/<path:object_key>")
+@flask_login.login_required
+def myphotos_delete(object_key):
+    "delete photo route"
+    database.delete_photo(object_key, flask_login.current_user.id)
+    return redirect(url_for("myphotos"))
 
+    
 @application.route("/login")
 def login():
     """Login route"""
