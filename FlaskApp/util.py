@@ -13,12 +13,15 @@ import os
 from io import BytesIO
 from PIL import Image, ExifTags
 
+from aws_xray_sdk.core import xray_recorder
+
 EXIF_ORIENTATION = 274  # Magic numbers from http://www.exiv2.org/tags.html
 
 def random_hex_bytes(n_bytes):
     """Create a hex encoded string of random bytes"""
     return os.urandom(n_bytes).hex()
-
+    
+@xray_recorder.capture()
 def resize_image(file_p, size):
     """Resize an image to fit within the size, and save to the path directory"""
     dest_ratio = size[0] / float(size[1])

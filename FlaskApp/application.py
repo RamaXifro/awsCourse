@@ -10,6 +10,7 @@
 # specific language governing permissions and limitations under the License.
 "Demo Flask application"
 import sys
+from datetime import datetime
 
 import requests
 import boto3
@@ -21,6 +22,9 @@ import flask_login
 from jose import jwt
 import io
 from flask import Flask, render_template_string, session, redirect, request, url_for, send_file
+from aws_xray_sdk.core import xray_recorder, patch_all
+from aws_xray_sdk.ext.flask.middleware import XRayMiddleware
+
 import config
 import util
 import database
@@ -37,12 +41,23 @@ JWKS_URL = ("https://cognito-idp.%s.amazonaws.com/%s/.well-known/jwks.json"
             % (config.AWS_REGION, config.COGNITO_POOL_ID))
 JWKS = requests.get(JWKS_URL).json()["keys"]
 
+### x-ray set up
+plugins = ('EC2Plugin',)
+xray_recorder.configure(service='MyApplication', plugins=plugins)
+XRayMiddleware(application, xray_recorder)
+patch_all()
+
 ### FlaskForm set up
 class PhotoForm(FlaskForm):
     """flask_wtf form class the file upload"""
     photo = FileField('image', validators=[
         FileRequired()
     ])
+    description = TextAreaField(u'Image Description')
+
+class User(flask_login.UserMixin):
+    """Standard flask_login UserMixin"""
+    pass
 
 @login_manager.user_loader
 def user_loader(session_token):
