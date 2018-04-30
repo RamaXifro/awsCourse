@@ -128,18 +128,10 @@ def myphotos():
                 Params={'Bucket': config.PHOTOS_BUCKET, 'Key': key})
 
             #######
-            # rekcognition exercise
+            # rekcognition exercise - this code has moved to lambda
             #######
-            rek = boto3.client('rekognition')
-            response = rek.detect_labels(
-                Image={
-                    'S3Object': {
-                        'Bucket': config.PHOTOS_BUCKET,
-                        'Name': key
-                    }
-                })
-            all_labels = [label['Name'] for label in response['Labels']]
-
+            all_labels = ["Processing labels asyncronously"]
+            
             #######
             # rds excercise
             # added user id and description to the database
